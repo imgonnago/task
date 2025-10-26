@@ -1,0 +1,154 @@
+import os
+import random
+import numpy as np
+import pandas as pd
+from imblearn.under_sampling import TomekLinks
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import accuracy_score
+import time
+
+_tic = None
+def tic():
+    global _tic
+    _tic = time.perf_counter()
+
+def toc(msg="Elapsed"):
+    dt = time.perf_counter() - _tic
+    print(f"{msg}: {dt:6f} s")
+    return dt
+
+#tic()
+data = pd.read_csv("C:/dataset_click/train_original_v2.csv")
+#toc()
+train_data, test_data = train_test_split(data, test_size=0.3, random_state = 42, shuffle=True)
+
+#tomek link사용. 이건 언더샘플링 할때 사용하는 라이브러리. 레이블 나눌때 가까운 거리로 있는 거 날리는거
+tl = TomekLinks(sampling_strategy='majority')
+
+
+train_data.to_csv("C:/dataset_click/train.csv",index=False)
+test_data.to_csv("C:/dataset_click/test.csv",index=False)
+train_df = pd.read_csv("C:/dataset_click/train.csv")
+test_df = pd.read_csv("C:/dataset_click/test.csv")
+
+for column in train_df.columns:
+    if train_df[column].dtype == "object":
+        train_df[column] = train_df[column].astype("string")
+train_df.info()
+
+#null값이 있는 거 0으로 만듬
+
+for col in train_df.columns:
+    if train_df[col].isnull().sum() != 0:
+        train_df[col].fillna(0, inplace=True)
+
+for col in test_df.columns:
+    if test_df[col].isnull().sum() != 0:
+        test_df[col].fillna(0, inplace=True)
+
+import category_encoders as ce
+
+encoding_target = list(train_df.dtypes[train_df.dtypes == "object"].index)
+enc = ce.CountEncoder(cols = encoding_target).fit(train_df)
+train_df = enc.transform(train_df)
+
+corr_matrix = train_df.corr(numeric_only=True)
+print(corr_matrix)
+
+click_corr = corr_matrix['Click']
+selected = click_corr[click_corr.abs() >= 0.05]
+selected = pd.DataFrame(selected)
+selected = selected.reset_index()
+selected.columns = ['Feature']
+print(selected)
+columns = selected["Feature"]
+
+train_df = train_df[columns]
+
+for i in train_df.columns:
+    corr1 = columns[i+1]
+    corr2 = columns[i+2]
+    corr = train_df[corr1].corr(train_df[corr2])
+    print(f"{corr1} 과 {corr2}의 상관관계 : {corr}")
+
+#클래스의 편향, 불균형 알아보는 그래프
+import plotly.express as px
+
+click = train_df['Click'].value_counts(normalize = True)
+
+click_figure = px.bar(click,
+                      x=["Not Clicked :0", "Clicked : 1"],
+                      y=click.values.tolist(),
+                      labels={"x": "Value", "y": "percentage"},
+                      width = 450,
+                      height = 500)
+
+click_figure.show()
+
+#train, test _set 만들기
+train_x = train_df.drop(columns = ["ID","Click"])
+train_y = train_df["Click"]
+train_y.value_counts()
+
+test_x = test_df.drop(columns = ["ID","Click"])
+test_y = test_df["Click"]
+
+#object형 데이터들을 빈도수에 따라 숫자형으로 바꾸기
+import category_encoders as ce
+
+encoding_target = list(train_x.dtypes[train_x.dtypes == "object"].index)
+enc = ce.CountEncoder(cols = encoding_target).fit(train_x, train_y)
+x_train_encoded = enc.transform(train_x)
+x_test_encoded = enc.transform(test_x)
+
+from sklearn.preprocessing import StandardScaler
+
+scaler = StandardScaler()
+x_train_scaled = scaler.fit_transform(x_train_encoded)
+x_train_encoded = pd.DataFrame(x_train_scaled, columns=x_train_encoded.columns).astype('float16')
+
+#여기서 tomek link사용
+x_train_encoded, train_y = tl.fit_resample(x_train_encoded, train_y)
+
+x_train_encoded.value_counts()
+
+#grid
+param_grid = {
+    "n_estimators": [100,200,300],
+    "max_depth": [10,50,100],
+    "random_state" : [42]
+}
+
+#grid Search
+grid = GridSearchCV(
+    estimator=RandomForestClassifier(class_weight="balanced", random_state=42),
+    param_grid=param_grid
+
+)
+
+grid.fit(x_train_encoded,train_y)
+
+best_model = grid.best_estimator_
+pred = best_model.predict(x_test_encoded)
+acc = accuracy_score(test_y, pred)
+
+#결과
+print("Best Params:", grid.best_params_)
+print("Test ACC     :", acc)
+
+#model_fit
+model = RandomForestClassifier(random_state=42)
+tic()
+model.fit(x_train_encoded, train_y)
+toc()
+
+y_pred_train = model.predict(x_train_encoded)
+y_pred_test = model.predict(x_test_encoded)
+
+train_acc = accuracy_score(train_y, y_pred_train)
+test_acc = accuracy_score(test_y, y_pred_test)
+
+print(f"train accuracy: {train_acc:.4f}")
+print(f"test accuracy: {test_acc:.4f}")
